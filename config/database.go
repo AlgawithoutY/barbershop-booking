@@ -39,7 +39,8 @@ func ConnectDatabase() {
 		&models.Barber{},
 		&models.Service{},
 		&models.Booking{},
-		&models.Review{}, // <-- Model Review sudah ditambahkan di sini
+		&models.Review{},
+		&models.Setting{}, // <-- Tambahkan ini
 	)
 	if err != nil {
 		log.Fatal("Gagal melakukan auto migrate: ", err)

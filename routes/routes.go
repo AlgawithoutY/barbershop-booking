@@ -15,16 +15,15 @@ func SetupRouter() *gin.Engine {
 
 	// --- PASANG CORS FLEXIBLE ---
 	r.Use(cors.New(cors.Config{
-		// Mengizinkan localhost & 127.0.0.1 agar tidak ERR_CONNECTION_REFUSED
-		AllowOrigins:     []string{"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"},
+		AllowAllOrigins:  true, // Diizinkan dari IP laptop mana saja di jaringan lokal
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
 		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Opsional: Komentari dulu RateLimiter jika masih terkendala
+	// RateLimiter Middleware
 	r.Use(middleware.RateLimiterMiddleware())
 
 	// --- ROUTE AUTH (Publik) ---
@@ -41,17 +40,19 @@ func SetupRouter() *gin.Engine {
 		})
 	})
 
-	// --- ROUTES PUBLIK ---
+	// --- ROUTES PUBLIK (Daftar Layanan & Barber Bisa Dilihat Siapa Saja) ---
+	r.GET("/api/barbers", controllers.GetBarbers)
+	r.GET("/api/barbers/:id", controllers.GetBarberByID)
 	r.GET("/api/barbers/:id/slots", controllers.GetAvailableSlots)
 
-	// Grouping Route API yang Diproteksi JWT
+	r.GET("/api/services", controllers.GetServices)
+	r.GET("/api/services/:id", controllers.GetServiceByID)
+
+	// --- GROUPING ROUTE API YANG DIPROTEKSI JWT ---
 	api := r.Group("/api")
 	api.Use(middleware.AuthMiddleware())
 	{
-		// --- Routes Barber ---
-		api.GET("/barbers", controllers.GetBarbers)
-		api.GET("/barbers/:id", controllers.GetBarberByID)
-
+		// --- Action CRUD Barber (Khusus Admin) ---
 		adminBarber := api.Group("/")
 		adminBarber.Use(middleware.RequireRoles("admin"))
 		{
@@ -60,10 +61,7 @@ func SetupRouter() *gin.Engine {
 			adminBarber.DELETE("/barbers/:id", controllers.DeleteBarber)
 		}
 
-		// --- Routes Service (Layanan) ---
-		api.GET("/services", controllers.GetServices)
-		api.GET("/services/:id", controllers.GetServiceByID)
-
+		// --- Action CRUD Service (Khusus Admin) ---
 		adminService := api.Group("/")
 		adminService.Use(middleware.RequireRoles("admin"))
 		{
@@ -72,7 +70,7 @@ func SetupRouter() *gin.Engine {
 			adminService.DELETE("/services/:id", controllers.DeleteService)
 		}
 
-		// --- Routes Booking (Pemesanan) ---
+		// --- Routes Booking (Pemesanan - Butuh Auth Customer/Admin) ---
 		api.GET("/bookings", controllers.GetBookings)
 		api.GET("/my-bookings", controllers.GetMyBookings)
 		api.POST("/bookings", controllers.CreateBooking)
@@ -91,8 +89,20 @@ func SetupRouter() *gin.Engine {
 		api.GET("/reviews", controllers.GetReviews)
 		api.POST("/reviews", controllers.CreateReview)
 
-		// --- Routes Admin Reports (Laporan Keuangan) ---
-		api.GET("/admin/reports/financial", middleware.RequireRoles("admin"), controllers.GetFinancialReport)
+		// --- Routes Admin Reports, Settings & Dashboard Stats (Hanya Admin) ---
+		adminOnly := api.Group("/")
+		adminOnly.Use(middleware.RequireRoles("admin"))
+		{
+			// Dashboard Stats
+			adminOnly.GET("/admin/dashboard-stats", controllers.GetDashboardStats)
+
+			// Laporan Keuangan
+			adminOnly.GET("/admin/reports/financial", controllers.GetFinancialReport)
+
+			// Pengaturan Barbershop (GET & PUT)
+			adminOnly.GET("/admin/settings", controllers.GetSettings)
+			adminOnly.PUT("/admin/settings", controllers.UpdateSettings)
+		}
 	}
 
 	return r
