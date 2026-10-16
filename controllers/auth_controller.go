@@ -60,7 +60,7 @@ func Register(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Registrasi berhasil",
-		"data":     user,
+		"data":    user,
 	})
 }
 
@@ -189,7 +189,7 @@ func VerifyOTP(c *gin.Context) {
 	})
 }
 
-// ForgotPassword menangani permintaan pemulihan kata sandi
+// POST /api/v1/auth/forgot-password - Cek keberadaan email untuk pemulihan kata sandi
 func ForgotPassword(c *gin.Context) {
 	var input struct {
 		Email string `json:"email" binding:"required,email"`
@@ -202,9 +202,63 @@ func ForgotPassword(c *gin.Context) {
 
 	var user models.User
 	if err := config.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "Jika email terdaftar, instruksi pemulihan telah dikirim."})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Email tidak terdaftar dalam sistem"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Instruksi reset kata sandi telah dikirim ke email."})
+	c.JSON(http.StatusOK, gin.H{"message": "Email ditemukan, instruksi pemulihan telah dikirim."})
+}
+
+// POST /api/v1/auth/reset-password - Mengubah password user berdasarkan email
+func ResetPassword(c *gin.Context) {
+	var input struct {
+		Email       string `json:"email" binding:"required,email"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email dan password baru (minimal 6 karakter) wajib diisi"})
+		return
+	}
+
+	var user models.User
+	if err := config.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Email tidak terdaftar"})
+		return
+	}
+
+	// Hash password baru menggunakan bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengenkripsi password baru"})
+		return
+	}
+
+	// Update password di database
+	user.Password = string(hashedPassword)
+	if err := config.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password berhasil diperbarui, silakan login dengan password baru",
+	})
+}
+
+// GET /api/admin/customers - Ambil semua user terdaftar yang ber-role customer
+func GetCustomers(c *gin.Context) {
+	var users []models.User
+
+	// Mengambil semua data user dengan role "customer" (mengabaikan kolom password)
+	if err := config.DB.Select("id", "name", "email", "phone", "role", "created_at").Where("role = ?", "customer").Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data pelanggan"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Berhasil mengambil data pelanggan",
+		"total":   len(users),
+		"data":    users,
+	})
 }

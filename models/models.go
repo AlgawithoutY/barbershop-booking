@@ -14,8 +14,8 @@ type User struct {
 	Phone        string         `gorm:"type:varchar(20);unique;not null" json:"phone"`
 	Password     string         `gorm:"type:varchar(255);not null" json:"-"` // Hidden dari JSON response
 	Role         string         `gorm:"type:enum('admin', 'customer');default:'customer'" json:"role"`
-	OtpCode      string         `gorm:"type:varchar(6)" json:"-"`            // Kode OTP sementara
-	OtpExpiresAt *time.Time     `json:"-"`                                   // Masa berlaku OTP
+	OtpCode      string         `gorm:"type:varchar(6)" json:"-"`             // Kode OTP sementara
+	OtpExpiresAt *time.Time     `json:"-"`                                    // Masa berlaku OTP
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
@@ -23,13 +23,16 @@ type User struct {
 
 // 2. Model Barber (Tukang Cukur)
 type Barber struct {
-	ID        uint           `gorm:"primaryKey" json:"id"`
-	Name      string         `gorm:"type:varchar(100);not null" json:"name"`
-	Specialty string         `gorm:"type:varchar(100)" json:"specialty"`
-	IsActive  bool           `gorm:"default:true" json:"is_active"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	ID               uint           `gorm:"primaryKey" json:"id"`
+	Name             string         `gorm:"type:varchar(100);not null" json:"name"`
+	Specialty        string         `gorm:"type:varchar(100)" json:"specialty"`
+	IsActive         bool           `gorm:"default:true" json:"is_active"`
+	WorkDays         string         `gorm:"type:varchar(100);default:'Senin - Sabtu'" json:"work_days"`
+	OperationalHours string         `gorm:"type:varchar(50);default:'08:00 - 22:00 WIB'" json:"operational_hours"`
+	Avatar           string         `gorm:"type:varchar(255)" json:"avatar"` // <-- Tambahan field untuk foto profil barber
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // 3. Model Service (Layanan / Paket Cukur)
@@ -62,12 +65,36 @@ type Booking struct {
 // 5. Model Review (Ulasan Pelanggan)
 type Review struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
-	BookingID uint           `gorm:"not null;unique" json:"booking_id"` // Relasi ke Booking agar 1 booking 1 review
+	BookingID uint           `gorm:"not null;unique" json:"booking_id"` // 1 booking 1 review
 	Booking   Booking        `gorm:"foreignKey:BookingID" json:"booking"`
-	UserID    uint           `gorm:"not null" json:"user_id"`           // Pelanggan yang memberi review
+	UserID    uint           `gorm:"not null" json:"user_id"`
 	User      User           `gorm:"foreignKey:UserID" json:"user"`
-	Rating    int            `gorm:"not null" json:"rating"`            // Nilai bintang (misal: 1 - 5)
-	Comment   string         `gorm:"type:text" json:"comment"`          // Komentar ulasan
+	Rating    int            `gorm:"not null" json:"rating"` // 1 - 5
+	Comment   string         `gorm:"type:text" json:"comment"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// 6. Model BarberSchedule (Jadwal Kerja Rutin Mingguan Barber)
+type BarberSchedule struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	BarberID  uint           `gorm:"not null" json:"barber_id"`
+	Barber    Barber         `gorm:"foreignKey:BarberID" json:"-"`
+	DayOfWeek int            `gorm:"not null" json:"day_of_week"` // 0 = Minggu, 1 = Senin, ..., 6 = Sabtu
+	IsOff     bool           `gorm:"default:false" json:"is_off"`  // True jika libur rutin
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// 7. Model BarberLeave (Cuti / Libur Spesifik Barber)
+type BarberLeave struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	BarberID  uint           `gorm:"not null" json:"barber_id"`
+	Barber    Barber         `gorm:"foreignKey:BarberID" json:"-"`
+	LeaveDate time.Time      `gorm:"type:date;not null" json:"leave_date"` // YYYY-MM-DD
+	Reason    string         `gorm:"type:varchar(255)" json:"reason"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`

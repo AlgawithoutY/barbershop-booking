@@ -10,34 +10,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GET /api/bookings - Admin melihat semua booking dengan opsi filter (date, status, barber_id)
+// GET /api/bookings - Admin melihat semua booking dengan opsi filter
 func GetBookings(c *gin.Context) {
 	var bookings []models.Booking
 	query := config.DB.Preload("User").Preload("Barber").Preload("Service")
 
-	// Ambil parameter query dari URL
-	dateFilter := c.Query("date")      // Format: YYYY-MM-DD
-	statusFilter := c.Query("status")  // Format: pending, confirmed, completed, cancelled
-	barberIDFilter := c.Query("barber_id") // Format: ID angka
+	dateFilter := c.Query("date")
+	statusFilter := c.Query("status")
+	barberIDFilter := c.Query("barber_id")
 
-	// Terapkan filter tanggal jika diisi
 	if dateFilter != "" {
 		startDate := dateFilter + " 00:00:00"
 		endDate := dateFilter + " 23:59:59"
 		query = query.Where("booking_time BETWEEN ? AND ?", startDate, endDate)
 	}
 
-	// Terapkan filter status jika diisi
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
 	}
 
-	// Terapkan filter barber_id jika diisi
 	if barberIDFilter != "" {
 		query = query.Where("barber_id = ?", barberIDFilter)
 	}
 
-	// Eksekusi query dengan urutan booking terbaru
 	if err := query.Order("booking_time DESC").Find(&bookings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data booking"})
 		return
@@ -50,7 +45,7 @@ func GetBookings(c *gin.Context) {
 	})
 }
 
-// POST /api/bookings - Buat booking baru dengan validasi anti-bentrok & jam operasional
+// POST /api/bookings - Buat booking baru dengan validasi operasional, status barber, cuti, & bentrok
 func CreateBooking(c *gin.Context) {
 	var input models.Booking
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -58,55 +53,92 @@ func CreateBooking(c *gin.Context) {
 		return
 	}
 
-	// Ambil user_id dari JWT token yang disimpan oleh AuthMiddleware
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Sesi login tidak valid"})
 		return
 	}
-
-	// Set UserID dari token yang sedang login (agar tidak perlu manual input user_id di body)
 	input.UserID = userID.(uint)
 
-	// 1. Validasi Jam Operasional (Buka pukul 09:00 sampai 21:00 WIB)
-	// Gunakan FixedZone UTC+7 (WIB) tanpa manipulasi integer manual
+	// Set Timezone WIB (+7)
 	loc := time.FixedZone("WIB", 7*3600)
+	nowWIB := time.Now().In(loc)
 	bookingWIB := input.BookingTime.In(loc)
 
-	hour := bookingWIB.Hour()
-	if hour < 9 || hour >= 21 {
+	// 1. Cek Status Aktif Barber
+	var barber models.Barber
+	if err := config.DB.First(&barber, input.BarberID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Barber tidak ditemukan"})
+		return
+	}
+	if !barber.IsActive {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Booking ditolak: Di luar jam operasional toko (Buka pukul 09:00 - 21:00 WIB)",
+			"error": "Booking ditolak: Barber sedang tidak aktif atau sedang libur.",
 		})
 		return
 	}
 
-	// 2. Validasi Tanggal Masa Lalu (Tidak boleh booking di waktu yang sudah lewat)
-	if input.BookingTime.Before(time.Now()) {
+	// 2. Validasi Jam Operasional (08:00 - 22:00 WIB)
+	hour := bookingWIB.Hour()
+	if hour < 8 || hour >= 22 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Booking ditolak: Di luar jam operasional toko (08:00 - 22:00 WIB)",
+		})
+		return
+	}
+
+	// 3. Validasi Tanggal Masa Lalu (Perbandingan Waktu WIB)
+	if bookingWIB.Before(nowWIB) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Booking ditolak: Tidak dapat memesan untuk waktu yang sudah berlalu",
 		})
 		return
 	}
 
-	// 3. Cek Double-Booking (Apakah barber sudah dibooking di jam yang sama?)
-	var existingBooking models.Booking
-	err := config.DB.Where("barber_id = ? AND booking_time = ?", input.BarberID, input.BookingTime).First(&existingBooking).Error
-	if err == nil {
-		// Jika err == nil, berarti data ditemukan (artinya jadwal sudah terisi)
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "Jadwal bentrok: Barber ini sudah memiliki jadwal booking di waktu tersebut. Silakan pilih jam lain.",
+	// 4. Validasi Cuti Spesifik Barber
+	dateOnly := bookingWIB.Format("2006-01-02")
+	var leaveCount int64
+	config.DB.Model(&models.BarberLeave{}).
+		Where("barber_id = ? AND leave_date = ?", input.BarberID, dateOnly).
+		Count(&leaveCount)
+
+	if leaveCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Booking ditolak: Barber sedang mengambil cuti pada tanggal tersebut.",
 		})
 		return
 	}
 
-	// 4. Jika semua validasi lolos, simpan ke database
+	// 5. Validasi Hari Libur Rutin Barber
+	dayOfWeek := int(bookingWIB.Weekday())
+	var schedule models.BarberSchedule
+	errSch := config.DB.Where("barber_id = ? AND day_of_week = ?", input.BarberID, dayOfWeek).First(&schedule).Error
+	if errSch == nil && schedule.IsOff {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Booking ditolak: Barber libur rutin pada hari tersebut.",
+		})
+		return
+	}
+
+	// 6. Cek Double-Booking
+	var existingBooking models.Booking
+	err := config.DB.Where("barber_id = ? AND booking_time = ? AND status != ?", input.BarberID, input.BookingTime, "cancelled").First(&existingBooking).Error
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Jadwal bentrok: Barber ini sudah memiliki jadwal booking di waktu tersebut.",
+		})
+		return
+	}
+
+	// Default status booking baru
+	input.Status = "pending"
+
+	// 7. Simpan Booking Ke Database
 	if err := config.DB.Create(&input).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat booking: " + err.Error()})
 		return
 	}
 
-	// Ambil relasi Preload untuk ditampilkan di response
 	config.DB.Preload("User").Preload("Barber").Preload("Service").First(&input, input.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -128,7 +160,7 @@ func GetBookingByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": booking})
 }
 
-// PUT /api/bookings/:id - Update status atau data booking
+// PUT /api/bookings/:id - Update data booking
 func UpdateBooking(c *gin.Context) {
 	var booking models.Booking
 	id := c.Param("id")
@@ -150,7 +182,7 @@ func UpdateBooking(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Booking berhasil diupdate", "data": booking})
 }
 
-// DELETE /api/bookings/:id - Batalkan/Hapus booking
+// DELETE /api/bookings/:id - Hapus booking
 func DeleteBooking(c *gin.Context) {
 	var booking models.Booking
 	id := c.Param("id")
@@ -161,36 +193,32 @@ func DeleteBooking(c *gin.Context) {
 	}
 
 	config.DB.Delete(&booking)
-	c.JSON(http.StatusOK, gin.H{"message": "Booking berhasil dibatalkan"})
+	c.JSON(http.StatusOK, gin.H{"message": "Booking berhasil dihapus"})
 }
 
-// PUT /api/bookings/:id/cancel - Batalkan booking dengan validasi kepemilikan & waktu
+// PUT /api/bookings/:id/cancel - Pembatalan booking oleh pelanggan/admin
 func CancelBooking(c *gin.Context) {
 	id := c.Param("id")
 
-	// 1. Ambil user_id dan role dari JWT claims
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Sesi login tidak valid"})
 		return
 	}
 
-	userRole, _ := c.Get("role") // "admin" atau "customer"
+	userRole, _ := c.Get("role")
 
-	// 2. Cari data booking beserta relasinya
 	var booking models.Booking
 	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking tidak ditemukan"})
 		return
 	}
 
-	// 3. Validasi Kepemilikan (Admin bebas, customer hanya bisa milik sendiri)
 	if userRole != "admin" && booking.UserID != userID.(uint) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak: Anda tidak memiliki izin untuk membatalkan booking ini"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak: Anda tidak memiliki izin membatalkan booking ini"})
 		return
 	}
 
-	// 4. Cek status booking
 	if booking.Status == "cancelled" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking ini sudah dibatalkan sebelumnya"})
 		return
@@ -200,19 +228,17 @@ func CancelBooking(c *gin.Context) {
 		return
 	}
 
-	// 5. Validasi Batasan Waktu (Minimal pembatalan 1 jam sebelum jadwal)
 	loc := time.FixedZone("WIB", 7*3600)
 	bookingTimeWIB := booking.BookingTime.In(loc)
 	nowWIB := time.Now().In(loc)
 
 	if nowWIB.After(bookingTimeWIB.Add(-1 * time.Hour)) {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Pembatalan ditolak: Batas waktu pembatalan adalah minimal 1 jam sebelum jadwal booking.",
+			"error": "Pembatalan ditolak: Batas waktu pembatalan minimal 1 jam sebelum jadwal.",
 		})
 		return
 	}
 
-	// 6. Update status menjadi 'cancelled' (Alih-alih menghapus data permanen)
 	booking.Status = "cancelled"
 	if err := config.DB.Save(&booking).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membatalkan booking: " + err.Error()})
@@ -225,18 +251,16 @@ func CancelBooking(c *gin.Context) {
 	})
 }
 
-// GET /api/my-bookings - Ambil daftar booking milik user yang sedang login
+// GET /api/my-bookings - Ambil riwayat booking user
 func GetMyBookings(c *gin.Context) {
-	// 1. Ambil user_id dari klaim JWT yang sedang aktif
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Sesi login tidak valid"})
 		return
 	}
 
-	// 2. Cari semua booking yang user_id-nya sesuai dengan user yang login
 	var bookings []models.Booking
-	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").Where("user_id = ?", userID).Find(&bookings).Error; err != nil {
+	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").Where("user_id = ?", userID).Order("booking_time DESC").Find(&bookings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data booking: " + err.Error()})
 		return
 	}
@@ -247,11 +271,10 @@ func GetMyBookings(c *gin.Context) {
 	})
 }
 
-// PUT /api/bookings/:id/status - Admin mengubah status booking (misal: confirmed, completed)
+// PUT /api/bookings/:id/status - Update status booking oleh Admin
 func UpdateBookingStatus(c *gin.Context) {
 	id := c.Param("id")
 
-	// Struct khusus untuk menangkap input status baru
 	var input struct {
 		Status string `json:"status" binding:"required"`
 	}
@@ -261,7 +284,6 @@ func UpdateBookingStatus(c *gin.Context) {
 		return
 	}
 
-	// Validasi status yang diperbolehkan
 	validStatuses := map[string]bool{
 		"pending":   true,
 		"confirmed": true,
@@ -271,19 +293,17 @@ func UpdateBookingStatus(c *gin.Context) {
 
 	if !validStatuses[input.Status] {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Status tidak valid. Status yang diizinkan: pending, confirmed, completed, cancelled",
+			"error": "Status tidak valid. Gunakan: pending, confirmed, completed, cancelled",
 		})
 		return
 	}
 
-	// Cari data booking berdasarkan ID
 	var booking models.Booking
 	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking tidak ditemukan"})
 		return
 	}
 
-	// Update status booking
 	booking.Status = input.Status
 	if err := config.DB.Save(&booking).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui status booking: " + err.Error()})
@@ -296,41 +316,97 @@ func UpdateBookingStatus(c *gin.Context) {
 	})
 }
 
-// GET /api/barbers/:id/slots?date=2026-09-07 - Cek slot jam yang tersedia untuk barber pada tanggal tertentu
+// GET /api/barbers/:id/slots?date=YYYY-MM-DD - Cek ketersediaan slot jam berdasarkan status barber, jadwal, & cuti
 func GetAvailableSlots(c *gin.Context) {
 	barberID := c.Param("id")
-	dateStr := c.Query("date") // Format: YYYY-MM-DD
+	dateStr := c.Query("date")
 
 	if dateStr == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter date wajib diisi (Format: YYYY-MM-DD)"})
 		return
 	}
 
-	// 1. Definisikan jam operasional toko (09:00 sampai 21:00)
-	operationalHours := []string{
-		"09:00", "10:00", "11:00", "12:00", "13:00", "14:00",
-		"15:00", "16:00", "17:00", "18:00", "19:00", "20:00",
+	// 1. Cek Status Aktif/Libur Barber secara Utama (Kolom IsActive di tabel barbers)
+	var barber models.Barber
+	if err := config.DB.First(&barber, barberID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Barber tidak ditemukan"})
+		return
 	}
 
-	// 2. Ambil semua booking yang aktif (tidak cancelled) untuk barber dan tanggal tersebut
+	if !barber.IsActive {
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "Barber sedang tidak aktif / libur",
+			"is_off":    true,
+			"date":      dateStr,
+			"barber_id": barberID,
+			"data":      []gin.H{},
+		})
+		return
+	}
+
+	parsedDate, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format tanggal tidak valid. Gunakan YYYY-MM-DD"})
+		return
+	}
+
+	// 2. Cek Cuti Spesifik Barber pada Tanggal Tersebut
+	var leaveCount int64
+	config.DB.Model(&models.BarberLeave{}).
+		Where("barber_id = ? AND leave_date = ?", barberID, dateStr).
+		Count(&leaveCount)
+
+	if leaveCount > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "Barber sedang cuti/libur pada tanggal ini",
+			"is_off":    true,
+			"date":      dateStr,
+			"barber_id": barberID,
+			"data":      []gin.H{},
+		})
+		return
+	}
+
+	// 3. Cek Hari Libur Rutin Mingguan Barber
+	dayOfWeek := int(parsedDate.Weekday())
+	var schedule models.BarberSchedule
+	errSchedule := config.DB.Where("barber_id = ? AND day_of_week = ?", barberID, dayOfWeek).First(&schedule).Error
+
+	if errSchedule == nil && schedule.IsOff {
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "Barber libur rutin pada hari ini",
+			"is_off":    true,
+			"date":      dateStr,
+			"barber_id": barberID,
+			"data":      []gin.H{},
+		})
+		return
+	}
+
+	// 4. Ambil Slot Jam Operasional (08:00 - 21:00)
+	operationalHours := []string{
+		"08:00", "09:00", "10:00", "11:00", "12:00", "13:00",
+		"14:00", "15:00", "16:00", "17:00", "18:00", "19:00",
+		"20:00", "21:00",
+	}
+
 	var existingBookings []models.Booking
 	queryDateStart := dateStr + " 00:00:00"
 	queryDateEnd := dateStr + " 23:59:59"
 
-	if err := config.DB.Where("barber_id = ? AND status != ? AND booking_time BETWEEN ? AND ?", 
+	if err := config.DB.Where("barber_id = ? AND status != ? AND booking_time BETWEEN ? AND ?",
 		barberID, "cancelled", queryDateStart, queryDateEnd).Find(&existingBookings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengecek ketersediaan slot"})
 		return
 	}
 
-	// Buat map untuk menampung jam yang sudah dibooking
+	loc := time.FixedZone("WIB", 7*3600)
 	bookedTimes := make(map[string]bool)
 	for _, b := range existingBookings {
-		tStr := b.BookingTime.Format("15:00")
+		tStr := b.BookingTime.In(loc).Format("15:04")
 		bookedTimes[tStr] = true
 	}
 
-	// 3. Petakan jam operasional ke status ketersediaan
 	type Slot struct {
 		Time      string `json:"time"`
 		Available bool   `json:"available"`
@@ -347,6 +423,7 @@ func GetAvailableSlots(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   "Berhasil mengambil ketersediaan slot",
+		"is_off":    false,
 		"date":      dateStr,
 		"barber_id": barberID,
 		"data":      slots,
