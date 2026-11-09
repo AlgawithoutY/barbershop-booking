@@ -15,7 +15,8 @@ func GetFinancialReport(c *gin.Context) {
 	var totalRevenue float64
 
 	// Filter status completed tanpa peka huruf besar/kecil (LOWER)
-	err := config.DB.Preload("User").Preload("Barber").Preload("Service").
+	// Tanpa Preload("Service") karena model sudah Barber-Centric
+	err := config.DB.Preload("User").Preload("Barber").
 		Where("LOWER(status) = ?", "completed").
 		Find(&bookings).Error
 
@@ -29,9 +30,11 @@ func GetFinancialReport(c *gin.Context) {
 	// Print log verifikasi ke terminal
 	fmt.Printf("[DEBUG] Jumlah transaksi completed terbaca: %d\n", len(bookings))
 
-	// Akumulasi total pendapatan
-	for _, b := range bookings {
-		totalRevenue += b.Service.Price
+	// Akumulasi total pendapatan (Menggunakan tarif flat standar per booking, misal Rp 50.000)
+	// Kamu bisa menyesuaikan nominal ini jika ada tarif khusus per barber nantinya
+	const standardPrice = 50000.0 
+	for range bookings {
+		totalRevenue += standardPrice
 	}
 
 	// Kirim respons JSON ke frontend

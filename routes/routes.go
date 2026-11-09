@@ -44,12 +44,13 @@ func SetupRouter() *gin.Engine {
 		})
 	})
 
-	// --- ROUTES PUBLIK (Daftar Layanan, Barber, Jadwal, & Slot Jam Bisa Dilihat Siapa Saja) ---
+	// --- ROUTES PUBLIK (Daftar Layanan, Barber, Jadwal, Slot Jam, & Review Barber Publik) ---
 	r.GET("/api/barbers", controllers.GetBarbers)
 	r.GET("/api/barbers/:id", controllers.GetBarberByID)
 	r.GET("/api/barbers/:id/slots", controllers.GetAvailableSlots)
 	r.GET("/api/barbers/:id/schedules", controllers.GetBarberSchedules)
 	r.GET("/api/barbers/:id/leaves", controllers.GetBarberLeaves)
+	r.GET("/api/barbers/:id/reviews", controllers.GetBarberReviews)
 
 	r.GET("/api/services", controllers.GetServices)
 	r.GET("/api/services/:id", controllers.GetServiceByID)
@@ -106,11 +107,10 @@ func SetupRouter() *gin.Engine {
 			adminBooking.PUT("/bookings/:id/status", controllers.UpdateBookingStatus)
 		}
 
-		// --- Routes Review (Ulasan Pelanggan) ---
-		api.GET("/reviews", controllers.GetReviews)
+		// --- Routes Review Customer ---
 		api.POST("/reviews", controllers.CreateReview)
 
-		// --- Routes Admin Reports, Settings, Customers & Dashboard Stats (Hanya Admin) ---
+		// --- Routes Admin Reports, Settings, Customers, Reviews & Dashboard Stats (Hanya Admin) ---
 		adminOnly := api.Group("/")
 		adminOnly.Use(middleware.RequireRoles("admin"))
 		{
@@ -122,6 +122,9 @@ func SetupRouter() *gin.Engine {
 
 			// Endpoint Notifikasi & List Booking Admin
 			adminOnly.GET("/admin/bookings", controllers.GetBookings)
+
+			// Endpoint Kelola Ulasan Admin
+			adminOnly.GET("/admin/reviews", controllers.GetAllReviewsForAdmin)
 
 			// Laporan Keuangan
 			adminOnly.GET("/admin/reports/financial", controllers.GetFinancialReport)

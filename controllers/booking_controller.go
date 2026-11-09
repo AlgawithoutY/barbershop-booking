@@ -13,7 +13,7 @@ import (
 // GET /api/bookings - Admin melihat semua booking dengan opsi filter
 func GetBookings(c *gin.Context) {
 	var bookings []models.Booking
-	query := config.DB.Preload("User").Preload("Barber").Preload("Service")
+	query := config.DB.Preload("User").Preload("Barber")
 
 	dateFilter := c.Query("date")
 	statusFilter := c.Query("status")
@@ -139,7 +139,7 @@ func CreateBooking(c *gin.Context) {
 		return
 	}
 
-	config.DB.Preload("User").Preload("Barber").Preload("Service").First(&input, input.ID)
+	config.DB.Preload("User").Preload("Barber").First(&input, input.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Booking berhasil dibuat",
@@ -152,7 +152,7 @@ func GetBookingByID(c *gin.Context) {
 	var booking models.Booking
 	id := c.Param("id")
 
-	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, id).Error; err != nil {
+	if err := config.DB.Preload("User").Preload("Barber").First(&booking, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking tidak ditemukan"})
 		return
 	}
@@ -177,7 +177,7 @@ func UpdateBooking(c *gin.Context) {
 	}
 
 	config.DB.Model(&booking).Updates(input)
-	config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, booking.ID)
+	config.DB.Preload("User").Preload("Barber").First(&booking, booking.ID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Booking berhasil diupdate", "data": booking})
 }
@@ -209,7 +209,7 @@ func CancelBooking(c *gin.Context) {
 	userRole, _ := c.Get("role")
 
 	var booking models.Booking
-	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, id).Error; err != nil {
+	if err := config.DB.Preload("User").Preload("Barber").First(&booking, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking tidak ditemukan"})
 		return
 	}
@@ -260,7 +260,7 @@ func GetMyBookings(c *gin.Context) {
 	}
 
 	var bookings []models.Booking
-	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").Where("user_id = ?", userID).Order("booking_time DESC").Find(&bookings).Error; err != nil {
+	if err := config.DB.Preload("User").Preload("Barber").Where("user_id = ?", userID).Order("booking_time DESC").Find(&bookings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data booking: " + err.Error()})
 		return
 	}
@@ -299,7 +299,7 @@ func UpdateBookingStatus(c *gin.Context) {
 	}
 
 	var booking models.Booking
-	if err := config.DB.Preload("User").Preload("Barber").Preload("Service").First(&booking, id).Error; err != nil {
+	if err := config.DB.Preload("User").Preload("Barber").First(&booking, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking tidak ditemukan"})
 		return
 	}
@@ -326,7 +326,6 @@ func GetAvailableSlots(c *gin.Context) {
 		return
 	}
 
-	// 1. Cek Status Aktif/Libur Barber secara Utama (Kolom IsActive di tabel barbers)
 	var barber models.Barber
 	if err := config.DB.First(&barber, barberID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Barber tidak ditemukan"})
@@ -350,7 +349,6 @@ func GetAvailableSlots(c *gin.Context) {
 		return
 	}
 
-	// 2. Cek Cuti Spesifik Barber pada Tanggal Tersebut
 	var leaveCount int64
 	config.DB.Model(&models.BarberLeave{}).
 		Where("barber_id = ? AND leave_date = ?", barberID, dateStr).
@@ -367,7 +365,6 @@ func GetAvailableSlots(c *gin.Context) {
 		return
 	}
 
-	// 3. Cek Hari Libur Rutin Mingguan Barber
 	dayOfWeek := int(parsedDate.Weekday())
 	var schedule models.BarberSchedule
 	errSchedule := config.DB.Where("barber_id = ? AND day_of_week = ?", barberID, dayOfWeek).First(&schedule).Error
@@ -383,7 +380,6 @@ func GetAvailableSlots(c *gin.Context) {
 		return
 	}
 
-	// 4. Ambil Slot Jam Operasional (08:00 - 21:00)
 	operationalHours := []string{
 		"08:00", "09:00", "10:00", "11:00", "12:00", "13:00",
 		"14:00", "15:00", "16:00", "17:00", "18:00", "19:00",
