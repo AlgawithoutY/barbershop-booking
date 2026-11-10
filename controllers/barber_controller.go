@@ -56,6 +56,7 @@ func UpdateBarber(c *gin.Context) {
 
 	var input struct {
 		Name             string `json:"name"`
+		Description      string `json:"description"` // <-- DITAMBAHKAN AGAR DESKRIPSI IKUT TERSIMPAN
 		Specialty        string `json:"specialty"`
 		IsActive         *bool  `json:"is_active"`
 		WorkDays         string `json:"work_days"`
@@ -70,6 +71,9 @@ func UpdateBarber(c *gin.Context) {
 	// Update field jika disediakan
 	if input.Name != "" {
 		barber.Name = input.Name
+	}
+	if input.Description != "" { // <-- DITAMBAHKAN LOGIKA PENYIMPANANNYA
+		barber.Description = input.Description
 	}
 	if input.Specialty != "" {
 		barber.Specialty = input.Specialty

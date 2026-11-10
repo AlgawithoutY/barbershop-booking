@@ -8,17 +8,17 @@ import (
 
 // 1. Model User (Admin / Customer)
 type User struct {
-	ID         uint           `gorm:"primaryKey" json:"id"`
-	Name       string         `gorm:"type:varchar(100);not null" json:"name"`
-	Email      string         `gorm:"type:varchar(100);unique;not null" json:"email"`
-	Phone      string         `gorm:"type:varchar(20);unique;not null" json:"phone"`
-	Password   string         `gorm:"type:varchar(255);not null" json:"-"` // Hidden dari JSON response
-	Role       string         `gorm:"type:enum('admin', 'customer');default:'customer'" json:"role"`
-	OtpCode    string         `gorm:"type:varchar(6)" json:"-"`            // Kode OTP sementara
-	OtpExpiresAt *time.Time   `json:"-"`                                   // Masa berlaku OTP
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
-	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
+	ID           uint           `gorm:"primaryKey" json:"id"`
+	Name         string         `gorm:"type:varchar(100);not null" json:"name"`
+	Email        string         `gorm:"type:varchar(100);unique;not null" json:"email"`
+	Phone        string         `gorm:"type:varchar(20);unique;not null" json:"phone"`
+	Password     string         `gorm:"type:varchar(255);not null" json:"-"` // Hidden dari JSON response
+	Role         string         `gorm:"type:enum('admin', 'customer');default:'customer'" json:"role"`
+	OtpCode      string         `gorm:"type:varchar(6)" json:"-"`            // Kode OTP sementara
+	OtpExpiresAt *time.Time     `json:"-"`                                   // Masa berlaku OTP
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // 2. Model Barber (Tukang Cukur) - Diperbarui untuk model Barber-Centric
@@ -48,7 +48,7 @@ type Service struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// 4. Model Booking (Reservasi) - Layanan (ServiceID) dihapus/diubah jadi opsional
+// 4. Model Booking (Reservasi) - Status diubah ke varchar(20) agar mendukung rejected
 type Booking struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
 	UserID      uint           `gorm:"not null" json:"user_id"`
@@ -56,7 +56,7 @@ type Booking struct {
 	BarberID    uint           `gorm:"not null" json:"barber_id"`
 	Barber      Barber         `gorm:"foreignKey:BarberID" json:"barber"`
 	BookingTime time.Time      `gorm:"not null" json:"booking_time"`
-	Status      string         `gorm:"type:enum('pending', 'confirmed', 'completed', 'cancelled');default:'pending'" json:"status"`
+	Status      string         `json:"status" gorm:"type:varchar(20);default:'pending'"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`

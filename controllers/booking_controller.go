@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"barbershop-backend/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // GET /api/bookings - Admin melihat semua booking dengan opsi filter
@@ -45,9 +47,13 @@ func GetBookings(c *gin.Context) {
 	})
 }
 
-// POST /api/bookings - Buat booking baru dengan validasi operasional, status barber, cuti, & bentrok
+// POST /api/bookings - Buat booking baru dengan pencegahan double-booking & batas 1 booking per hari per user (termasuk yang dibatalkan)
 func CreateBooking(c *gin.Context) {
-	var input models.Booking
+	var input struct {
+		BarberID    uint      `json:"barber_id" binding:"required"`
+		BookingTime time.Time `json:"booking_time" binding:"required"`
+	}
+
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -58,7 +64,7 @@ func CreateBooking(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Sesi login tidak valid"})
 		return
 	}
-	input.UserID = userID.(uint)
+	currentUserID := userID.(uint)
 
 	// Set Timezone WIB (+7)
 	loc := time.FixedZone("WIB", 7*3600)
@@ -87,7 +93,7 @@ func CreateBooking(c *gin.Context) {
 		return
 	}
 
-	// 3. Validasi Tanggal Masa Lalu (Perbandingan Waktu WIB)
+	// 3. Validasi Tanggal Masa Lalu
 	if bookingWIB.Before(nowWIB) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Booking ditolak: Tidak dapat memesan untuk waktu yang sudah berlalu",
@@ -120,30 +126,57 @@ func CreateBooking(c *gin.Context) {
 		return
 	}
 
-	// 6. Cek Double-Booking
-	var existingBooking models.Booking
-	err := config.DB.Where("barber_id = ? AND booking_time = ? AND status != ?", input.BarberID, input.BookingTime, "cancelled").First(&existingBooking).Error
-	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "Jadwal bentrok: Barber ini sudah memiliki jadwal booking di waktu tersebut.",
-		})
+	// 6. MENGGUNAKAN TRANSAKSI DATABASE UNTUK MENCEGAH RACE CONDITION & DOUBLE BOOKING
+	var newBooking models.Booking
+
+	errTx := config.DB.Transaction(func(tx *gorm.DB) error {
+		// A. Cek apakah user sudah pernah membuat booking di tanggal yang sama (1 akun HANYA BISA 1 KALI booking per hari, termasuk yang dibatalkan/ditolak)
+		startDateUser := dateOnly + " 00:00:00"
+		endDateUser := dateOnly + " 23:59:59"
+		
+		var existingUserBooking models.Booking
+		errUserCheck := tx.Where("user_id = ? AND booking_time BETWEEN ? AND ?",
+			currentUserID, startDateUser, endDateUser).First(&existingUserBooking).Error
+
+		if errUserCheck == nil {
+			return errors.New("Anda sudah pernah membuat jadwal booking pada tanggal tersebut. 1 akun hanya diizinkan membuat 1 kali pemesanan per hari.")
+		}
+
+		// B. Cek double-booking pada jam dan barber yang sama (rebutan slot secara bersamaan)
+		var existingSlotBooking models.Booking
+		errSlotCheck := tx.Where("barber_id = ? AND booking_time = ? AND status NOT IN (?, ?)",
+			input.BarberID, input.BookingTime, "cancelled", "rejected").First(&existingSlotBooking).Error
+
+		if errSlotCheck == nil {
+			return errors.New("Jadwal bentrok: Slot waktu ini baru saja dipesan oleh orang lain.")
+		}
+
+		// C. Jika aman, buat booking baru di dalam transaksi
+		newBooking = models.Booking{
+			UserID:      currentUserID,
+			BarberID:    input.BarberID,
+			BookingTime: input.BookingTime,
+			Status:      "pending",
+		}
+
+		if err := tx.Create(&newBooking).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if errTx != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": errTx.Error()})
 		return
 	}
 
-	// Default status booking baru
-	input.Status = "pending"
-
-	// 7. Simpan Booking Ke Database
-	if err := config.DB.Create(&input).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat booking: " + err.Error()})
-		return
-	}
-
-	config.DB.Preload("User").Preload("Barber").First(&input, input.ID)
+	// Ambil data relasi Preload untuk response
+	config.DB.Preload("User").Preload("Barber").First(&newBooking, newBooking.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Booking berhasil dibuat",
-		"data":    input,
+		"data":    newBooking,
 	})
 }
 
@@ -219,8 +252,8 @@ func CancelBooking(c *gin.Context) {
 		return
 	}
 
-	if booking.Status == "cancelled" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking ini sudah dibatalkan sebelumnya"})
+	if booking.Status == "cancelled" || booking.Status == "rejected" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking ini sudah dibatalkan atau ditolak sebelumnya"})
 		return
 	}
 	if booking.Status == "completed" {
@@ -232,7 +265,7 @@ func CancelBooking(c *gin.Context) {
 	bookingTimeWIB := booking.BookingTime.In(loc)
 	nowWIB := time.Now().In(loc)
 
-	if nowWIB.After(bookingTimeWIB.Add(-1 * time.Hour)) {
+	if userRole != "admin" && nowWIB.After(bookingTimeWIB.Add(-1 * time.Hour)) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Pembatalan ditolak: Batas waktu pembatalan minimal 1 jam sebelum jadwal.",
 		})
@@ -289,11 +322,12 @@ func UpdateBookingStatus(c *gin.Context) {
 		"confirmed": true,
 		"completed": true,
 		"cancelled": true,
+		"rejected":  true,
 	}
 
 	if !validStatuses[input.Status] {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Status tidak valid. Gunakan: pending, confirmed, completed, cancelled",
+			"error": "Status tidak valid. Gunakan: pending, confirmed, completed, cancelled, rejected",
 		})
 		return
 	}
@@ -390,8 +424,8 @@ func GetAvailableSlots(c *gin.Context) {
 	queryDateStart := dateStr + " 00:00:00"
 	queryDateEnd := dateStr + " 23:59:59"
 
-	if err := config.DB.Where("barber_id = ? AND status != ? AND booking_time BETWEEN ? AND ?",
-		barberID, "cancelled", queryDateStart, queryDateEnd).Find(&existingBookings).Error; err != nil {
+	if err := config.DB.Where("barber_id = ? AND status NOT IN (?, ?) AND booking_time BETWEEN ? AND ?",
+		barberID, "cancelled", "rejected", queryDateStart, queryDateEnd).Find(&existingBookings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengecek ketersediaan slot"})
 		return
 	}
